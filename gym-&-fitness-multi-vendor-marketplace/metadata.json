@@ -1,0 +1,6 @@
+{
+  "name": "Gym & Fitness Multi-Vendor Marketplace",
+  "description": "A professional multi-vendor e-commerce platform specifically designed for gym equipment vendors and fitness enthusiasts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

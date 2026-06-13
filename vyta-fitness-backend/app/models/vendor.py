@@ -24,6 +24,7 @@ class DocumentType(str, PyEnum):
     ID_PROOF = "id_proof"
     BUSINESS_LICENSE = "business_license"
     CERTIFICATION = "certification"
+    BUSINESS_REGISTRATION = "business_registration"
 
 
 class DocumentStatus(str, PyEnum):
@@ -51,6 +52,11 @@ class Vendor(SQLModel, table=True):
     business_name: str = Field(unique=True, max_length=255, nullable=False)
     description: Optional[str] = Field(default=None)
     logo_url: Optional[str] = Field(default=None)
+    full_name: Optional[str] = Field(default=None, max_length=255)
+    emirates_id: Optional[str] = Field(default=None, max_length=50)
+    contact_mobile: Optional[str] = Field(default=None, max_length=20)
+    contact_landline: Optional[str] = Field(default=None, max_length=20)
+    address: Optional[str] = Field(default=None)
     onboarding_status: OnboardingStatus = Field(
         default=OnboardingStatus.PENDING,
         sa_column=SAEnum(

@@ -26,6 +26,11 @@ class RegisterRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     business_name: Optional[str] = None
+    full_name: Optional[str] = None
+    emirates_id: Optional[str] = None
+    contact_mobile: Optional[str] = None
+    contact_landline: Optional[str] = None
+    address: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -82,6 +87,11 @@ async def register(body: RegisterRequest, session: AsyncSession = Depends(get_se
         vendor = Vendor(
             user_id=user.id,
             business_name=body.business_name,
+            full_name=body.full_name,
+            emirates_id=body.emirates_id,
+            contact_mobile=body.contact_mobile,
+            contact_landline=body.contact_landline,
+            address=body.address,
         )
         session.add(vendor)
 

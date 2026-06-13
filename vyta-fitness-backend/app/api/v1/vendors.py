@@ -1,15 +1,18 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.database import get_session
 from app.core.dependencies import RoleChecker, get_current_user
+from app.core.security import create_access_token
+from app.core.storage import storage
 from app.models.user import User, UserRole
 from app.models.vendor import (
     DocumentType,
@@ -28,6 +31,11 @@ class VendorRegisterRequest(BaseModel):
     password: str
     business_name: str
     description: Optional[str] = None
+    full_name: Optional[str] = None
+    emirates_id: Optional[str] = None
+    contact_mobile: Optional[str] = None
+    contact_landline: Optional[str] = None
+    address: Optional[str] = None
 
 
 class DocumentUploadRequest(BaseModel):
@@ -47,6 +55,11 @@ class VendorResponse(BaseModel):
     logo_url: Optional[str] = None
     onboarding_status: str
     current_balance: Decimal
+    full_name: Optional[str] = None
+    emirates_id: Optional[str] = None
+    contact_mobile: Optional[str] = None
+    contact_landline: Optional[str] = None
+    address: Optional[str] = None
 
 
 class LedgerEntryResponse(BaseModel):
@@ -102,12 +115,29 @@ async def register_vendor(
         user_id=user.id,
         business_name=body.business_name,
         description=body.description,
+        full_name=body.full_name,
+        emirates_id=body.emirates_id,
+        contact_mobile=body.contact_mobile,
+        contact_landline=body.contact_landline,
+        address=body.address,
     )
     session.add(vendor)
     await session.commit()
     await session.refresh(vendor)
 
-    return {"id": str(vendor.id), "business_name": vendor.business_name}
+    token = create_access_token(
+        data={"sub": str(user.id), "role": user.role.value},
+        expires_delta=timedelta(minutes=60),
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "role": user.role.value,
+        "id": str(vendor.id),
+        "business_name": vendor.business_name,
+        "onboarding_status": vendor.onboarding_status.value,
+    }
 
 
 @router.post("/vendors/documents", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -125,6 +155,44 @@ async def upload_document(
         vendor_id=vendor.id,
         document_type=body.document_type,
         document_url=body.document_url,
+    )
+    session.add(doc)
+    await session.commit()
+    await session.refresh(doc)
+
+    return DocumentResponse(
+        id=str(doc.id),
+        document_type=doc.document_type.value,
+        document_url=doc.document_url,
+        status=doc.status.value,
+        uploaded_at=doc.uploaded_at,
+    )
+
+
+@router.post("/vendors/documents/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+async def upload_document_file(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+):
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
+    vendor = result.one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor profile not found")
+
+    file_ext = os.path.splitext(file.filename)[1]
+    stored_name = f"{uuid.uuid4().hex}{file_ext}"
+
+    content = await file.read()
+    document_url = await storage.upload(stored_name, content, content_type="application/pdf")
+
+    doc = VendorDocument(
+        vendor_id=vendor.id,
+        document_type=DocumentType.BUSINESS_REGISTRATION,
+        document_url=document_url,
     )
     session.add(doc)
     await session.commit()
@@ -273,4 +341,9 @@ async def get_vendor_profile(
         logo_url=vendor.logo_url,
         onboarding_status=vendor.onboarding_status.value,
         current_balance=vendor.current_balance,
+        full_name=vendor.full_name,
+        emirates_id=vendor.emirates_id,
+        contact_mobile=vendor.contact_mobile,
+        contact_landline=vendor.contact_landline,
+        address=vendor.address,
     )

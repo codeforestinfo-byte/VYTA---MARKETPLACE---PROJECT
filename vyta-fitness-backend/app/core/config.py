@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REDIS_URL: str = "redis://redis:6379/0"
     DEBUG: bool = False
+    UPLOAD_DIR: str = "uploads"
+
+    MINIO_ENDPOINT: str = "minio:9000"
+    MINIO_ACCESS_KEY: str = "vyta"
+    MINIO_SECRET_KEY: str = "vyta_secret"
+    MINIO_BUCKET: str = "vyta-uploads"
+    MINIO_SECURE: bool = False
 
 
 settings = Settings()
