@@ -6,9 +6,6 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://vyta:vyta_secret@db:5432/vyta_fitness"
     DATABASE_URL_SYNC: str = "postgresql://vyta:vyta_secret@db:5432/vyta_fitness"
-    SECRET_KEY: str = "change-me-in-production"
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REDIS_URL: str = "redis://redis:6379/0"
     DEBUG: bool = False
     UPLOAD_DIR: str = "uploads"
@@ -18,6 +15,11 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "vyta_secret"
     MINIO_BUCKET: str = "vyta-uploads"
     MINIO_SECURE: bool = False
+
+    FIREBASE_API_KEY: str = ""
+
+    TOTP_ENCRYPTION_KEY: str = ""
+    TOTP_ISSUER_NAME: str = "Vyta Marketplace"
 
 
 settings = Settings()

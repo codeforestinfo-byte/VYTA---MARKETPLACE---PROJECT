@@ -10,7 +10,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.database import get_session
 from app.core.dependencies import RoleChecker
-from app.core.security import hash_password
+from app.core.firebase import _firebase_available
+from firebase_admin import auth as firebase_auth
 from app.models.consultation import ConsultationStatus, NutritionConsultation
 from app.models.customer import Customer
 from app.models.order import Order, OrderItem, OrderStatus
@@ -98,8 +99,12 @@ class CustomerResponse(BaseModel):
     email: str
     first_name: str
     last_name: str
+    name: Optional[str] = None
+    store_role: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
+    is_email_verified: bool = False
+    mfa_enabled: bool = False
     created_at: datetime
 
 
@@ -108,8 +113,13 @@ class CustomerDetail(BaseModel):
     email: str
     first_name: str
     last_name: str
+    name: Optional[str] = None
+    store_role: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
+    is_email_verified: bool = False
+    mfa_enabled: bool = False
+    shipping_address: Optional[str] = None
     created_at: datetime
     orders: List[OrderSummary]
 
@@ -296,7 +306,9 @@ async def list_customers(
         CustomerResponse(
             id=str(c.id), email=u.email,
             first_name=c.first_name, last_name=c.last_name,
+            name=c.name, store_role=c.store_role,
             phone=c.phone, is_active=u.is_active,
+            is_email_verified=u.email_verified, mfa_enabled=u.mfa_enabled,
             created_at=c.created_at,
         )
         for c, u in result.all()
@@ -329,7 +341,11 @@ async def get_customer(
     return CustomerDetail(
         id=str(c.id), email=u.email if u else "",
         first_name=c.first_name, last_name=c.last_name,
+        name=c.name, store_role=c.store_role,
         phone=c.phone, is_active=u.is_active if u else True,
+        is_email_verified=u.email_verified if u else False,
+        mfa_enabled=u.mfa_enabled if u else False,
+        shipping_address=c.shipping_address,
         created_at=c.created_at, orders=orders,
     )
 
@@ -480,6 +496,9 @@ async def create_vendor(
     session: AsyncSession = Depends(get_session),
     _: User = Depends(RoleChecker([UserRole.ADMIN])),
 ):
+    if not _firebase_available:
+        raise HTTPException(status_code=503, detail="Firebase is not configured")
+
     existing_user = await session.exec(select(User).where(User.email == body.email))
     if existing_user.one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -490,16 +509,31 @@ async def create_vendor(
     if existing_vendor.one_or_none():
         raise HTTPException(status_code=409, detail="Business name already taken")
 
+    # Create Firebase user
+    try:
+        firebase_record = firebase_auth.create_user(
+            email=body.email,
+            password=body.password,
+        )
+        uid = firebase_record.uid
+    except firebase_auth.EmailAlreadyExistsError:
+        raise HTTPException(status_code=409, detail="Email already registered in Firebase")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Firebase user: {e}")
+
+    # Create local user profile
     user = User(
+        id=uid,
         email=body.email,
-        password_hash=hash_password(body.password),
+        name=body.business_name,
+        store_role=None,
         role=UserRole.VENDOR,
     )
     session.add(user)
     await session.flush()
 
     vendor = Vendor(
-        user_id=user.id,
+        user_id=uid,
         business_name=body.business_name,
         description=body.description,
     )
@@ -790,6 +824,8 @@ async def get_admin_profile(
         id=str(current_user.id), email=current_user.email,
         first_name="", last_name="",
         phone=None, is_active=current_user.is_active,
+        is_email_verified=current_user.email_verified,
+        mfa_enabled=current_user.mfa_enabled,
         created_at=current_user.created_at,
     )
 
@@ -806,7 +842,12 @@ async def update_admin_profile(
             raise HTTPException(409, detail="Email already in use")
         current_user.email = body.email
     if body.password is not None:
-        current_user.password_hash = hash_password(body.password)
+        if not _firebase_available:
+            raise HTTPException(503, detail="Firebase is not configured")
+        try:
+            firebase_auth.update_user(current_user.id, password=body.password)
+        except Exception as e:
+            raise HTTPException(500, detail=f"Failed to update Firebase password: {e}")
 
     session.add(current_user)
     await session.commit()
@@ -816,5 +857,7 @@ async def update_admin_profile(
         id=str(current_user.id), email=current_user.email,
         first_name="", last_name="",
         phone=None, is_active=current_user.is_active,
+        is_email_verified=current_user.email_verified,
+        mfa_enabled=current_user.mfa_enabled,
         created_at=current_user.created_at,
     )
