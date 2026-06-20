@@ -31,9 +31,14 @@ class User(SQLModel, table=True):
             nullable=False,
         )
     )
+    password_hash: Optional[str] = Field(max_length=255, default=None, nullable=True)
     is_active: bool = Field(default=True)
     email_verified: bool = Field(default=False)
+    is_super_admin: bool = Field(default=False)
     mfa_enabled: bool = Field(default=False)
+    totp_secret: Optional[str] = Field(default=None, max_length=512, nullable=True)
+    verification_token: Optional[str] = Field(default=None, max_length=512, nullable=True, index=True)
+    verification_token_expires: Optional[datetime] = Field(default=None, nullable=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

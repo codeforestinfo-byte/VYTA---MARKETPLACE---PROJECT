@@ -1,55 +1,65 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from '@/src/context/AuthContext';
-import ProtectedRoute from '@/src/components/ProtectedRoute';
-import AdminLayout from '@/src/layouts/AdminLayout';
-import LoginPage from '@/src/pages/LoginPage';
-import DashboardPage from '@/src/pages/DashboardPage';
-import VendorsPage from '@/src/pages/VendorsPage';
-import ProductsPage from '@/src/pages/ProductsPage';
-import OrdersPage from '@/src/pages/OrdersPage';
-import CustomersPage from '@/src/pages/CustomersPage';
-import WithdrawalsPage from '@/src/pages/WithdrawalsPage';
-import ConsultationsPage from '@/src/pages/ConsultationsPage';
-import ReportsPage from '@/src/pages/ReportsPage';
-import SettingsPage from '@/src/pages/SettingsPage';
-import ProfilePage from '@/src/pages/ProfilePage';
+import { type ReactNode } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from './contexts/AuthContext';
+import Login from './pages/Login';
+import MFAVerifyPage from './pages/MFAVerifyPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
+import Dashboard from './pages/Dashboard';
+import OrdersPage from './pages/OrdersPage';
+import VendorsPage from './pages/VendorsPage';
+import CustomersPage from './pages/CustomersPage';
+import ProductsPage from './pages/ProductsPage';
+import WithdrawalsPage from './pages/WithdrawalsPage';
+import ConsultationsPage from './pages/ConsultationsPage';
+import UserManagementPage from './pages/UserManagementPage';
 
-function AdminRoutes() {
-  return (
-    <AdminLayout>
-      <Routes>
-        <Route index element={<DashboardPage />} />
-        <Route path="vendors" element={<VendorsPage />} />
-        <Route path="products" element={<ProductsPage />} />
-        <Route path="orders" element={<OrdersPage />} />
-        <Route path="customers" element={<CustomersPage />} />
-        <Route path="withdrawals" element={<WithdrawalsPage />} />
-        <Route path="consultations" element={<ConsultationsPage />} />
-        <Route path="reports" element={<ReportsPage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        <Route path="profile" element={<ProfilePage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </AdminLayout>
-  );
+function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { adminUser, pendingMFA, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f7f7f7] flex items-center justify-center">
+        <div className="text-gray-900 text-lg">Loading...</div>
+      </div>
+    );
+  }
+
+  if (pendingMFA) {
+    return <Navigate to="/2fa-verify" replace />;
+  }
+
+  if (!adminUser) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
 }
 
 export default function App() {
+  const { adminUser, pendingMFA, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f7f7f7] flex items-center justify-center">
+        <div className="text-gray-900 text-lg">Loading...</div>
+      </div>
+    );
+  }
+
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/*"
-            element={
-              <ProtectedRoute>
-                <AdminRoutes />
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+    <Routes>
+      <Route path="/login" element={adminUser || pendingMFA ? <Navigate to={pendingMFA ? '/2fa-verify' : '/'} replace /> : <Login />} />
+      <Route path="/2fa-verify" element={<MFAVerifyPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/orders" element={<ProtectedRoute><OrdersPage /></ProtectedRoute>} />
+      <Route path="/vendors" element={<ProtectedRoute><VendorsPage /></ProtectedRoute>} />
+      <Route path="/customers" element={<ProtectedRoute><CustomersPage /></ProtectedRoute>} />
+      <Route path="/products" element={<ProtectedRoute><ProductsPage /></ProtectedRoute>} />
+      <Route path="/withdrawals" element={<ProtectedRoute><WithdrawalsPage /></ProtectedRoute>} />
+      <Route path="/consultations" element={<ProtectedRoute><ConsultationsPage /></ProtectedRoute>} />
+      <Route path="/user-management" element={<ProtectedRoute><UserManagementPage /></ProtectedRoute>} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

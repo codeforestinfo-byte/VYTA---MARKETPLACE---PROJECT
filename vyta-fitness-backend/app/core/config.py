@@ -18,8 +18,22 @@ class Settings(BaseSettings):
 
     FIREBASE_API_KEY: str = ""
 
+    ADMIN_JWT_SECRET: str = ""
+    ADMIN_JWT_ALGORITHM: str = "HS256"
+    ADMIN_JWT_EXPIRY_HOURS: int = 24
+
     TOTP_ENCRYPTION_KEY: str = ""
     TOTP_ISSUER_NAME: str = "Vyta Marketplace"
+
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_TLS: bool = True
+
+    ADMIN_VERIFICATION_TOKEN_EXPIRY_HOURS: int = 48
+    ADMIN_BASE_URL: str = "http://localhost:3001"
 
 
 settings = Settings()

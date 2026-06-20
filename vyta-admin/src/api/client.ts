@@ -1,28 +1,46 @@
-import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+const TOKEN_KEY = 'vyta_admin_token';
 
-const apiClient = axios.create({
-  baseURL: '/api/v1',
-  headers: { 'Content-Type': 'application/json' },
-});
-
-apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('vyta_admin_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+function getToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
   }
-  return config;
-});
+}
 
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('vyta_admin_token');
-      localStorage.removeItem('vyta_admin_user');
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`/api/v1${path}`, { ...options, headers });
+
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
+  let data: any;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Server returned an invalid response');
+  }
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
       window.location.href = '/login';
     }
-    return Promise.reject(error);
+    throw new Error(data.detail || `Request failed: ${res.status}`);
   }
-);
 
-export default apiClient;
+  return data as T;
+}

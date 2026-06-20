@@ -1,7 +1,7 @@
 """Run this to create an admin user: python seed_admin.py
 
 This script creates an admin user in both Firebase Authentication
-and the local PostgreSQL database.
+and the local PostgreSQL database with a hashed password.
 """
 import asyncio
 import os
@@ -15,6 +15,8 @@ import firebase_admin
 from firebase_admin import credentials, auth
 
 from app.core.config import settings
+from app.core.admin_auth import hash_password
+from app.models.admin import AdminRole
 from app.models.user import User, UserRole
 
 
@@ -55,16 +57,30 @@ async def main():
         )
         existing = result.one_or_none()
         if existing:
-            print(f"Admin already exists in DB: {ADMIN_EMAIL}")
+            updated = False
+            if not existing.password_hash:
+                existing.password_hash = hash_password(ADMIN_PASSWORD)
+                updated = True
+                print(f"Admin password hash updated: {ADMIN_EMAIL}")
+            if existing.store_role != AdminRole.SUPER_ADMIN.value:
+                existing.store_role = AdminRole.SUPER_ADMIN.value
+                updated = True
+                print(f"Admin store_role set to super_admin: {ADMIN_EMAIL}")
+            if updated:
+                session.add(existing)
+                await session.commit()
+            else:
+                print(f"Admin already exists in DB: {ADMIN_EMAIL}")
             return
 
         user = User(
             id=firebase_uid,
             email=ADMIN_EMAIL,
             name="Admin",
-            store_role=None,
+            store_role=AdminRole.SUPER_ADMIN.value,
             role=UserRole.ADMIN,
             is_active=True,
+            password_hash=hash_password(ADMIN_PASSWORD),
         )
         session.add(user)
         await session.commit()
