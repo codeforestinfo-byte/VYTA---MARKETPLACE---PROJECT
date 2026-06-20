@@ -1,7 +1,6 @@
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, Optional
-import uuid
 
 from sqlalchemy import Enum as SAEnum
 from sqlmodel import Field, Relationship, SQLModel
@@ -20,9 +19,10 @@ class UserRole(str, PyEnum):
 class User(SQLModel, table=True):
     __tablename__ = "users"
 
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    id: str = Field(primary_key=True, max_length=128)
     email: str = Field(unique=True, index=True, max_length=255, nullable=False)
-    password_hash: str = Field(nullable=False)
+    name: str = Field(max_length=255, nullable=False)
+    store_role: Optional[str] = Field(max_length=100, default=None)
     role: UserRole = Field(
         sa_column=SAEnum(
             UserRole,
@@ -31,7 +31,14 @@ class User(SQLModel, table=True):
             nullable=False,
         )
     )
+    password_hash: Optional[str] = Field(max_length=255, default=None, nullable=True)
     is_active: bool = Field(default=True)
+    email_verified: bool = Field(default=False)
+    is_super_admin: bool = Field(default=False)
+    mfa_enabled: bool = Field(default=False)
+    totp_secret: Optional[str] = Field(default=None, max_length=512, nullable=True)
+    verification_token: Optional[str] = Field(default=None, max_length=512, nullable=True, index=True)
+    verification_token_expires: Optional[datetime] = Field(default=None, nullable=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

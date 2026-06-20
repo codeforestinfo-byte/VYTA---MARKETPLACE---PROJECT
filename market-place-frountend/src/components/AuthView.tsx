@@ -1,13 +1,18 @@
 import React, { useState, useRef } from 'react';
-import { Dumbbell, ShieldAlert, CheckCircle2, Upload } from 'lucide-react';
+import { ShieldAlert, CheckCircle2, Upload } from 'lucide-react';
+import { FirebaseError } from 'firebase/app';
 import { User } from '../types';
 import { api } from '../api';
+import { signInWithGoogle, forgotPassword, sendVerificationEmail, auth } from '../firebase';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 
 interface AuthViewProps {
   onAuthSuccess: (user: User) => void;
   initialTab?: 'login' | 'register';
   onCancel: () => void;
 }
+
+type LoginMode = 'buyer' | 'vendor';
 
 export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel }: AuthViewProps) {
   const [tab, setTab] = useState<'login' | 'register'>(initialTab);
@@ -16,12 +21,124 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<'buyer' | 'vendor'>('buyer');
+  const [loginMode, setLoginMode] = useState<LoginMode>('buyer');
   const [storeName, setStoreName] = useState('');
   const [keepSignedIn, setKeepSignedIn] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showNeedHelp, setShowNeedHelp] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetSent, setResetSent] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // MFA verification state
+  const [mfaPending, setMfaPending] = useState(false);
+  const [mfaUid, setMfaUid] = useState('');
+  const [mfaEmail, setMfaEmail] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+
+  // Forgot Password
+  const handleForgotPassword = async () => {
+    if (!resetEmail || !resetEmail.includes('@')) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await forgotPassword(resetEmail);
+      setResetSent(true);
+      setSuccess('Password reset link sent! Check your email.');
+    } catch (err: unknown) {
+      if (err instanceof FirebaseError) {
+        if (err.code === 'auth/user-not-found') {
+          setError('No account found with this email.');
+        } else if (err.code === 'auth/invalid-email') {
+          setError('Please enter a valid email address.');
+        } else if (err.code === 'auth/too-many-requests') {
+          setError('Too many requests. Please try again later.');
+        } else {
+          setError('Failed to send reset email. Try again later.');
+        }
+      } else {
+        setError('Failed to send reset email. Try again later.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Firebase Google Sign-In
+  const handleGoogleSignIn = async () => {
+    try {
+      setIsSubmitting(true);
+      setError(null);
+      const result = await signInWithGoogle();
+      const idToken = await result.user.getIdToken();
+      const res = await api.googleLogin(idToken);
+      localStorage.setItem('vyta_token', res.access_token);
+      const me = await api.getMe();
+      const user: User = {
+        email: me.email,
+        name: me.email.split('@')[0],
+        role: me.role === 'vendor' ? 'vendor' : 'buyer',
+        emailVerified: me.email_verified,
+        mfaEnabled: me.mfa_enabled,
+      };
+      localStorage.setItem('vyta_user_jwt', JSON.stringify(user));
+      setSuccess('Welcome to VYTA!');
+      setTimeout(() => {
+        setIsSubmitting(false);
+        onAuthSuccess(user);
+      }, 800);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '';
+      setError(message.includes('popup-closed-by-user') ? 'Sign-in cancelled.' : 'Google sign-in failed.');
+      setIsSubmitting(false);
+    }
+  };
+
+  // MFA Code Verification
+  const handleMfaVerify = async () => {
+    if (!mfaCode || mfaCode.length !== 6) {
+      setError('Please enter a valid 6-digit verification code.');
+      return;
+    }
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const res = await api.verifyMfa(mfaEmail, password, mfaCode);
+      localStorage.setItem('vyta_token', res.access_token);
+      const me = await api.getMe();
+      const user: User = {
+        email: me.email,
+        name: me.email.split('@')[0],
+        role: 'vendor',
+        emailVerified: me.email_verified,
+        mfaEnabled: true,
+        vendorId: me.id,
+      };
+      setSuccess('2FA verified! Welcome back.');
+      localStorage.setItem('vyta_user_jwt', JSON.stringify(user));
+      setTimeout(() => {
+        setIsSubmitting(false);
+        onAuthSuccess(user);
+      }, 800);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Invalid verification code.';
+      setError(message);
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleMfaCancel = () => {
+    setMfaPending(false);
+    setMfaCode('');
+    setMfaUid('');
+    setMfaEmail('');
+    setError(null);
+  };
 
   // Vendor-specific fields
   const [vendorFullName, setVendorFullName] = useState('');
@@ -32,31 +149,37 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
   const [businessRegFile, setBusinessRegFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const isValidEmail = (e: string) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.split('@')[1].includes('.');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
 
-    if (!email) {
-      setError('Please enter your email or phone number to continue.');
+    const trimmedEmail = email.trim().toLowerCase();
+
+    if (!trimmedEmail) {
+      setError('Please enter your email address.');
       return;
     }
-    if (!email.includes('@')) {
-      setError('Please provide a valid email address.');
+    if (!isValidEmail(trimmedEmail)) {
+      setError('Please provide a valid email address (e.g. name@domain.com).');
       return;
     }
-    if (!password || password.length < 5) {
-      setError('Passwords must be at least 5 characters long for security.');
+    if (!password || password.length < 6) {
+      setError('Password must be at least 6 characters.');
       return;
     }
 
     if (tab === 'register') {
-      if (!name) {
-        setError('Please enter your legal or screen name.');
+      if (!name || name.trim().length < 2) {
+        setError('Please enter your full name (at least 2 characters).');
         return;
       }
       if (password !== confirmPassword) {
-        setError('The passwords you typed do not match. Please re-enter.');
+        setError('Passwords do not match.');
         return;
       }
       if (role === 'vendor' && !storeName) {
@@ -85,134 +208,137 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
 
     try {
       if (tab === 'register') {
-        try {
-          const nameParts = name.split(' ');
-          const registerData: Parameters<typeof api.register>[0] = {
-            email,
+        const nameParts = name.trim().split(' ');
+
+        if (role === 'vendor') {
+          const registerData: Parameters<typeof api.registerVendor>[0] = {
+            email: trimmedEmail,
             password,
-            role: role === 'vendor' ? 'vendor' : 'customer',
+            business_name: storeName,
+            full_name: vendorFullName,
             first_name: nameParts[0] || '',
             last_name: nameParts.slice(1).join(' ') || nameParts[0] || '',
+            emirates_id: emiratesId,
+            contact_mobile: contactMobile,
+            contact_landline: contactLandline || undefined,
+            address,
           };
 
-          if (role === 'vendor') {
-            registerData.business_name = storeName;
-            registerData.full_name = vendorFullName;
-            registerData.emirates_id = emiratesId;
-            registerData.contact_mobile = contactMobile;
-            if (contactLandline) registerData.contact_landline = contactLandline;
-            registerData.address = address;
+          const res = await api.registerVendor(registerData);
+          if ('access_token' in res) {
+            localStorage.setItem('vyta_token', res.access_token);
           }
 
-          const res = await api.register(registerData);
-          localStorage.setItem('vyta_token', res.access_token);
-
-          // Upload business registration document if selected
-          if (role === 'vendor' && businessRegFile) {
+          // Upload business registration document if provided
+          if (businessRegFile) {
             try {
               await api.uploadVendorDocument(businessRegFile);
             } catch {
-              // Document upload is optional, continue
+              // document upload optional
             }
           }
 
-          // Fetch vendor profile to get real vendor ID
-          let vendorId: string | undefined;
-          if (role === 'vendor') {
-            try {
-              const vendorProfile = await api.getVendorProfile();
-              vendorId = vendorProfile.id;
-            } catch {
-              // Fall back to fake ID
-            }
+          // Sign in client-side to get Firebase Auth session, then trigger verification email
+          try {
+            await signInWithEmailAndPassword(auth, trimmedEmail, password);
+            await sendVerificationEmail();
+          } catch {
+            api.sendVerificationEmail(trimmedEmail).catch(() => null);
           }
 
+          const vendorId = 'vendor_id' in res ? res.vendor_id : undefined;
           const user: User = {
-            email,
-            name: role === 'vendor' ? vendorFullName : name,
-            role,
-            vendorId: vendorId,
+            email: trimmedEmail,
+            name: vendorFullName || name.trim(),
+            role: 'vendor',
+            emailVerified: false,
+            vendorId,
           };
 
-          setSuccess('Supplement Marketplace Account Created successfully!');
+          setSuccess('Vendor account created! Check your email to verify.');
           localStorage.setItem('vyta_user_jwt', JSON.stringify(user));
           setTimeout(() => {
             setIsSubmitting(false);
             onAuthSuccess(user);
           }, 800);
           return;
-        } catch {
-          // Fallback to simulation if API is unavailable
         }
 
-        // Simulation fallback
-        const dummyUser: User = {
-          email,
-          name: role === 'vendor' ? vendorFullName : name,
-          role,
-          vendorId: role === 'vendor' ? 'user_vendor_' + Date.now().toString() : undefined,
+        // Customer registration
+        const registerData: Parameters<typeof api.register>[0] = {
+          email: trimmedEmail,
+          password,
+          role: 'customer',
+          name: name.trim(),
+          store_role: 'buyer',
+          first_name: nameParts[0] || '',
+          last_name: nameParts.slice(1).join(' ') || nameParts[0] || '',
         };
-        setSuccess('Supplement Marketplace Account Created successfully!');
-        localStorage.setItem('vyta_user_jwt', JSON.stringify(dummyUser));
-        setTimeout(() => {
-          setIsSubmitting(false);
-          onAuthSuccess(dummyUser);
-        }, 1000);
-        return;
-      }
 
-      // Login flow
-      try {
-        const res = await api.login(email, password);
+        const res = await api.register(registerData);
         localStorage.setItem('vyta_token', res.access_token);
-        const me = await api.getMe();
+
         const user: User = {
-          email: me.email,
-          name: me.email.split('@')[0],
-          role: me.role === 'vendor' ? 'vendor' : 'buyer',
-          vendorId: me.role === 'vendor' ? me.id : undefined,
+          email: trimmedEmail,
+          name: name.trim(),
+          role: 'buyer',
+          emailVerified: false,
         };
-        setSuccess('Welcome back to VYTA!');
+
+        setSuccess('Account created! Check your email to verify.');
         localStorage.setItem('vyta_user_jwt', JSON.stringify(user));
         setTimeout(() => {
           setIsSubmitting(false);
           onAuthSuccess(user);
         }, 800);
         return;
-      } catch {
-        // Fallback to simulation
       }
 
-      const dummyUser: User = {
-        email,
-        name: email.split('@')[0],
-        role: 'buyer',
+      // Login flow
+      const res = await api.login(trimmedEmail, password);
+
+      // Check if MFA is required (vendor with 2FA enabled)
+      if (res.mfa_required) {
+        setMfaUid(res.uid || '');
+        setMfaEmail(res.email);
+        setMfaPending(true);
+        setIsSubmitting(false);
+        return;
+      }
+
+      localStorage.setItem('vyta_token', res.access_token);
+      const me = await api.getMe();
+      const user: User = {
+        email: me.email,
+        name: me.email.split('@')[0],
+        role: me.role === 'vendor' ? 'vendor' : 'buyer',
+        emailVerified: me.email_verified,
+        mfaEnabled: me.mfa_enabled,
+        vendorId: me.role === 'vendor' ? me.id : undefined,
       };
       setSuccess('Welcome back to VYTA!');
-      localStorage.setItem('vyta_user_jwt', JSON.stringify(dummyUser));
+      localStorage.setItem('vyta_user_jwt', JSON.stringify(user));
       setTimeout(() => {
         setIsSubmitting(false);
-        onAuthSuccess(dummyUser);
-      }, 1000);
-    } catch {
-      setError('Something went wrong. Please try again.');
+        onAuthSuccess(user);
+      }, 800);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Something went wrong.';
+      setError(message);
       setIsSubmitting(false);
     }
   };
 
   return (
     <div className="min-h-[80vh] flex flex-col items-center justify-center bg-[#f7f7f7] py-8 px-4 font-sans" id="auth-container">
-      <div className="flex items-center justify-center gap-2 cursor-pointer mb-6" onClick={onCancel} id="auth-logo">
-        <div className="bg-[#132836]/10 p-2 rounded-lg">
-          <Dumbbell className="h-5 w-5 text-[#1b73b3]" />
-        </div>
-        <span className="font-display font-black text-2xl tracking-tight text-[#132836]">VYTA</span>
+      <div className="flex items-center justify-center mb-8 mt-2" onClick={onCancel} id="auth-logo">
+        <img src="/logo-2-black.png" alt="Vyta" className="h-12 w-auto" />
       </div>
 
       {/* Main Card Wrapper */}
       <div className="bg-white rounded-md border border-gray-200 shadow-sm p-6 max-w-[360px] w-full" id="auth-card">
         <h2 className="text-2xl font-bold text-gray-900 mb-4 font-display text-left">
-          {tab === 'login' ? 'Sign in' : 'Create account'}
+          {mfaPending ? 'Two-Factor Authentication' : showForgotPassword ? 'Reset your password' : tab === 'login' ? (loginMode === 'vendor' ? 'Vendor Sign In' : 'Customer Sign In') : 'Create account'}
         </h2>
 
 
@@ -242,7 +368,125 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
           </div>
         )}
 
+        {mfaPending ? (
+          <div className="space-y-4 text-left" id="mfa-verify-container">
+            <div className="bg-blue-50 border-l-4 border-blue-600 p-3 rounded text-xs text-blue-800">
+              <p className="font-bold">Two-Factor Authentication Required</p>
+              <p className="mt-1">Enter the 6-digit code from your Microsoft Authenticator app.</p>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-900 mb-1" htmlFor="mfa-code-input">
+                Verification Code
+              </label>
+              <input
+                id="mfa-code-input"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={mfaCode}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setMfaCode(digits);
+                }}
+                placeholder="000000"
+                maxLength={6}
+                className="w-full border border-gray-400 rounded px-2.5 py-2 text-sm text-center text-lg font-mono tracking-[0.5em] outline-none focus:border-[#1c3d52] focus:shadow-[0_0_0_3px_rgba(0,94,42,0.15)]"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleMfaVerify}
+              disabled={isSubmitting || mfaCode.length !== 6}
+              className="w-full py-2 bg-[#1b73b3] hover:bg-[#145a8a] text-black font-extrabold text-xs rounded shadow transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? 'Verifying...' : 'Verify & Sign In'}
+            </button>
+            <button
+              type="button"
+              onClick={handleMfaCancel}
+              className="w-full py-1.5 text-xs text-[#1c3d52] hover:underline font-bold cursor-pointer bg-transparent border-none"
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : showForgotPassword ? (
+          <div className="space-y-3.5 text-left">
+            <p className="text-xs text-gray-600 mb-1">
+              Enter your email address and we'll send you a link to reset your password.
+            </p>
+            <div>
+              <label className="block text-xs font-bold text-gray-900 mb-1" htmlFor="reset-email-input">
+                Email
+              </label>
+              <input
+                id="reset-email-input"
+                type="email"
+                value={resetEmail}
+                onChange={(e) => setResetEmail(e.target.value)}
+                placeholder="name@email.com"
+                className="w-full border border-gray-400 rounded px-2.5 py-1.5 text-sm outline-none focus:border-[#1c3d52] focus:shadow-[0_0_0_3px_rgba(0,94,42,0.15)]"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              disabled={isSubmitting || resetSent}
+              className="w-full py-2 bg-[#1b73b3] hover:bg-[#145a8a] text-black font-extrabold text-xs rounded shadow transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isSubmitting ? 'Sending...' : resetSent ? 'Sent!' : 'Send reset link'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowForgotPassword(false);
+                setResetSent(false);
+                setError(null);
+                setSuccess(null);
+              }}
+              className="w-full py-1.5 text-xs text-[#1c3d52] hover:underline font-bold cursor-pointer bg-transparent border-none"
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-3.5 text-left" id="auth-form">
+          {tab === 'login' && (
+            <div>
+              <label className="block text-xs font-bold text-gray-900 mb-1">
+                Account type
+              </label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${loginMode === 'buyer' ? 'border-[#1c3d52] bg-[#1c3d52]/10 font-bold' : 'border-gray-200 hover:bg-gray-50'}`}>
+                  <div className="flex items-center gap-1.5">
+                    <input 
+                      type="radio" 
+                      name="loginMode" 
+                      checked={loginMode === 'buyer'} 
+                      onChange={() => setLoginMode('buyer')}
+                      className="text-[#1c3d52] focus:ring-[#1c3d52] h-3.5 w-3.5"
+                    />
+                    <span className="text-xs text-gray-900">Customer Login</span>
+                  </div>
+                  <span className="text-[10px] text-gray-500 mt-1">Browse & purchase supplements</span>
+                </label>
+
+                <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${loginMode === 'vendor' ? 'border-[#1c3d52] bg-[#1c3d52]/10 font-bold' : 'border-gray-200 hover:bg-gray-50'}`}>
+                  <div className="flex items-center gap-1.5">
+                    <input 
+                      type="radio" 
+                      name="loginMode" 
+                      checked={loginMode === 'vendor'} 
+                      onChange={() => setLoginMode('vendor')}
+                      className="text-[#1c3d52] focus:ring-[#1c3d52] h-3.5 w-3.5"
+                    />
+                    <span className="text-xs text-gray-900">Vendor Login</span>
+                  </div>
+                  <span className="text-[10px] text-gray-500 mt-1">Manage your store & products</span>
+                </label>
+              </div>
+            </div>
+          )}
+
           {tab === 'register' && (
             <div>
               <label className="block text-xs font-bold text-gray-900 mb-1" htmlFor="auth-name-input">
@@ -437,9 +681,19 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
                 Password
               </label>
               {tab === 'login' && (
-                <span className="text-xs text-[#1c3d52] hover:underline cursor-pointer">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowForgotPassword(true);
+                    setResetEmail(email);
+                    setResetSent(false);
+                    setError(null);
+                    setSuccess(null);
+                  }}
+                  className="text-xs text-[#1c3d52] hover:underline cursor-pointer bg-transparent border-none"
+                >
                   Forgot password?
-                </span>
+                </button>
               )}
             </div>
             <input
@@ -475,7 +729,32 @@ export default function AuthView({ onAuthSuccess, initialTab = 'login', onCancel
           >
             {isSubmitting ? 'Processing...' : tab === 'login' ? 'Continue' : 'Create your VYTA account'}
           </button>
+
+          <div className="relative flex items-center justify-center my-4">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-300"></div>
+            </div>
+            <span className="relative px-3 bg-white text-xs text-gray-500 font-medium">
+              or
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={isSubmitting}
+            className="w-full flex items-center justify-center gap-2 py-2 border border-gray-400 rounded text-xs font-semibold text-gray-700 hover:bg-gray-50 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4" />
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+            </svg>
+            Sign in with Google
+          </button>
         </form>
+        )}
 
         {tab === 'login' && (
           <div className="mt-4 text-xs">

@@ -31,7 +31,7 @@ async function request<T>(
 export const api = {
   // --- Auth ---
   login: (email: string, password: string) =>
-    request<{ access_token: string; token_type: string; role: string }>('/auth/login', {
+    request<ApiLoginResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
@@ -40,6 +40,8 @@ export const api = {
     email: string;
     password: string;
     role: 'customer' | 'vendor';
+    name?: string;
+    store_role?: string;
     first_name?: string;
     last_name?: string;
     business_name?: string;
@@ -55,7 +57,55 @@ export const api = {
     }),
 
   getMe: () =>
-    request<{ id: string; email: string; role: string; is_active: boolean }>('/auth/me'),
+    request<{ id: string; email: string; role: string; is_active: boolean; email_verified: boolean; mfa_enabled: boolean }>('/auth/me'),
+
+  googleLogin: (idToken: string) =>
+    request<{ access_token: string; token_type: string; role: string }>('/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ id_token: idToken }),
+    }),
+
+  sendVerificationEmail: (email: string) =>
+    request<{ message: string; email: string }>('/auth/send-verification-email', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  sendPasswordReset: (email: string) =>
+    request<{ message: string; email: string }>('/auth/send-password-reset', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  verifyEmail: (email: string) =>
+    request<{ message: string }>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  notifyEmailChange: (email: string) =>
+    request<{ message: string }>('/auth/notify-email-change', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  notifyMfaEnrollment: (email: string) =>
+    request<{ message: string }>('/auth/notify-mfa-enrollment', {
+      method: 'POST',
+      body: JSON.stringify({ email, action: 'enrolled' }),
+    }),
+
+  changeEmail: (currentEmail: string, newEmail: string, password: string) =>
+    request<{ message: string; previous_email: string; new_email: string }>('/auth/change-email', {
+      method: 'POST',
+      body: JSON.stringify({ current_email: currentEmail, new_email: newEmail, password }),
+    }),
+
+  verifyEmailStatus: (email: string) =>
+    request<{ email: string; email_verified: boolean }>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
 
   // --- Products ---
   getProducts: (params?: { vendor_id?: string; search?: string; is_available?: boolean }) => {
@@ -122,13 +172,15 @@ export const api = {
     password: string;
     business_name: string;
     description?: string;
+    first_name?: string;
+    last_name?: string;
     full_name?: string;
     emirates_id?: string;
     contact_mobile?: string;
     contact_landline?: string;
     address?: string;
   }) =>
-    request<ApiVendorResponse>('/vendors/register', {
+    request<ApiVendorRegisterResponse>('/vendors/register', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -152,6 +204,32 @@ export const api = {
       return res.json();
     });
   },
+
+  // --- MFA ---
+  mfaSetup: () =>
+    request<{ secret: string; provisioning_uri: string; qr_code_url: string }>('/vendors/mfa/setup', {
+      method: 'POST',
+    }),
+
+  mfaVerifySetup: (code: string) =>
+    request<{ message: string; mfa_enabled: boolean }>('/vendors/mfa/verify-setup', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+
+  mfaDisable: () =>
+    request<{ message: string; mfa_enabled: boolean }>('/vendors/mfa/disable', {
+      method: 'POST',
+    }),
+
+  mfaStatus: () =>
+    request<{ mfa_enabled: boolean; email: string }>('/vendors/mfa/status'),
+
+  verifyMfa: (email: string, password: string, code: string) =>
+    request<{ access_token: string; token_type: string; role: string }>('/auth/verify-mfa', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, code }),
+    }),
 
   // --- Health ---
   health: () =>
@@ -209,6 +287,27 @@ export interface ApiVendorResponse {
   onboarding_status: string;
   current_balance: number;
   created_at: string;
+}
+
+export interface ApiVendorRegisterResponse {
+  access_token?: string;
+  token_type?: string;
+  uid?: string;
+  email?: string;
+  role?: string;
+  vendor_id?: string;
+  business_name?: string;
+  onboarding_status?: string;
+  message?: string;
+}
+
+export interface ApiLoginResponse {
+  access_token: string | null;
+  token_type: string | null;
+  role: string;
+  email: string;
+  uid?: string;
+  mfa_required?: boolean;
 }
 
 export interface ApiTransactionResponse {

@@ -48,10 +48,12 @@ class Vendor(SQLModel, table=True):
     __tablename__ = "vendors"
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    user_id: uuid.UUID = Field(foreign_key="users.id", unique=True, nullable=False)
+    user_id: str = Field(foreign_key="users.id", unique=True, nullable=False)
     business_name: str = Field(unique=True, max_length=255, nullable=False)
     description: Optional[str] = Field(default=None)
     logo_url: Optional[str] = Field(default=None)
+    first_name: Optional[str] = Field(default=None, max_length=255)
+    last_name: Optional[str] = Field(default=None, max_length=255)
     full_name: Optional[str] = Field(default=None, max_length=255)
     emirates_id: Optional[str] = Field(default=None, max_length=50)
     contact_mobile: Optional[str] = Field(default=None, max_length=20)
@@ -70,6 +72,7 @@ class Vendor(SQLModel, table=True):
         default=Decimal("0.00"),
         sa_column=Column(Numeric(12, 2), default=Decimal("0.00"), nullable=False),
     )
+    totp_secret: Optional[str] = Field(default=None, max_length=512)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     user: Optional["User"] = Relationship(back_populates="vendor")
@@ -154,3 +157,41 @@ class WithdrawalRequest(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     vendor: Optional["Vendor"] = Relationship(back_populates="withdrawal_requests")
+
+
+class VendorLoginHistory(SQLModel, table=True):
+    __tablename__ = "vendor_login_history"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    vendor_id: str = Field(foreign_key="users.id", nullable=False, index=True)
+    ip_address: Optional[str] = Field(default=None, max_length=45)
+    user_agent: Optional[str] = Field(default=None, max_length=512)
+    success: bool = Field(default=True)
+    failure_reason: Optional[str] = Field(default=None, max_length=255)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class VendorSession(SQLModel, table=True):
+    __tablename__ = "vendor_sessions"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    vendor_id: str = Field(foreign_key="users.id", nullable=False, index=True)
+    token_hash: str = Field(max_length=512, nullable=False, unique=True)
+    ip_address: Optional[str] = Field(default=None, max_length=45)
+    user_agent: Optional[str] = Field(default=None, max_length=512)
+    is_active: bool = Field(default=True)
+    last_activity: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class VendorAuditLog(SQLModel, table=True):
+    __tablename__ = "vendor_audit_logs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    vendor_id: str = Field(foreign_key="users.id", nullable=False, index=True)
+    action: str = Field(max_length=255, nullable=False)
+    resource_type: str = Field(max_length=100, nullable=False)
+    resource_id: Optional[str] = Field(default=None, max_length=255)
+    details: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    ip_address: Optional[str] = Field(default=None, max_length=45)
+    created_at: datetime = Field(default_factory=datetime.utcnow)

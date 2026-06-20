@@ -5,13 +5,18 @@ import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+import pyotp
 
 from app.core.database import get_session
-from app.core.dependencies import RoleChecker, get_current_user
-from app.core.security import create_access_token
+from app.core.dependencies import RequireEmailVerified, RoleChecker, get_current_user
+from app.core.encryption import encrypt_secret, decrypt_secret
+from app.core.firebase import _firebase_available
+from app.core.security import firebase_login
+from app.core.config import settings
+from firebase_admin import auth as firebase_auth
 from app.core.storage import storage
 from app.models.user import User, UserRole
 from app.models.vendor import (
@@ -27,10 +32,12 @@ router = APIRouter(tags=["Vendors"])
 
 
 class VendorRegisterRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
     business_name: str
     description: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     full_name: Optional[str] = None
     emirates_id: Optional[str] = None
     contact_mobile: Optional[str] = None
@@ -86,11 +93,14 @@ class DocumentResponse(BaseModel):
     uploaded_at: datetime
 
 
-@router.post("/vendors/register", response_model=dict, status_code=status.HTTP_201_CREATED)
+@router.post("/vendors/register", status_code=status.HTTP_201_CREATED)
 async def register_vendor(
     body: VendorRegisterRequest,
     session: AsyncSession = Depends(get_session),
 ):
+    if not _firebase_available:
+        raise HTTPException(status_code=503, detail="Firebase is not configured")
+
     existing_user = await session.exec(select(User).where(User.email == body.email))
     if existing_user.one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -101,20 +111,34 @@ async def register_vendor(
     if existing_vendor.one_or_none():
         raise HTTPException(status_code=409, detail="Business name already taken")
 
-    from app.core.security import hash_password
+    # Create Firebase user
+    try:
+        firebase_record = firebase_auth.create_user(
+            email=body.email,
+            password=body.password,
+        )
+        uid = firebase_record.uid
+    except firebase_auth.EmailAlreadyExistsError:
+        raise HTTPException(status_code=409, detail="Email already registered in Firebase")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Firebase user: {e}")
 
     user = User(
+        id=uid,
         email=body.email,
-        password_hash=hash_password(body.password),
+        name=body.business_name,
+        store_role=None,
         role=UserRole.VENDOR,
     )
     session.add(user)
     await session.flush()
 
     vendor = Vendor(
-        user_id=user.id,
+        user_id=uid,
         business_name=body.business_name,
         description=body.description,
+        first_name=body.first_name,
+        last_name=body.last_name,
         full_name=body.full_name,
         emirates_id=body.emirates_id,
         contact_mobile=body.contact_mobile,
@@ -125,19 +149,36 @@ async def register_vendor(
     await session.commit()
     await session.refresh(vendor)
 
-    token = create_access_token(
-        data={"sub": str(user.id), "role": user.role.value},
-        expires_delta=timedelta(minutes=60),
-    )
+    # Generate verification link
+    verification_link = None
+    try:
+        verification_link = firebase_auth.generate_email_verification_link(body.email)
+    except Exception:
+        pass
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "role": user.role.value,
-        "id": str(vendor.id),
-        "business_name": vendor.business_name,
-        "onboarding_status": vendor.onboarding_status.value,
-    }
+    # Log the user in to return an access token
+    try:
+        id_token = firebase_login(body.email, body.password)
+        decoded = firebase_auth.verify_id_token(id_token)
+        return {
+            "access_token": id_token,
+            "token_type": "bearer",
+            "uid": uid,
+            "email": body.email,
+            "role": "vendor",
+            "vendor_id": str(vendor.id),
+            "business_name": vendor.business_name,
+            "onboarding_status": vendor.onboarding_status.value,
+        }
+    except ValueError:
+        return {
+            "message": "Vendor registered successfully. Please log in.",
+            "uid": uid,
+            "email": body.email,
+            "vendor_id": str(vendor.id),
+            "business_name": vendor.business_name,
+            "onboarding_status": vendor.onboarding_status.value,
+        }
 
 
 @router.post("/vendors/documents", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -145,6 +186,7 @@ async def upload_document(
     body: DocumentUploadRequest,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -211,6 +253,7 @@ async def upload_document_file(
 async def list_documents(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -237,6 +280,7 @@ async def list_documents(
 async def get_ledger(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -266,6 +310,7 @@ async def request_withdrawal(
     body: WithdrawalRequestCreate,
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -300,6 +345,7 @@ async def request_withdrawal(
 async def list_withdrawals(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -328,6 +374,7 @@ async def list_withdrawals(
 async def get_vendor_profile(
     session: AsyncSession = Depends(get_session),
     current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+    _: User = Depends(RequireEmailVerified()),
 ):
     result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
     vendor = result.one_or_none()
@@ -347,3 +394,115 @@ async def get_vendor_profile(
         contact_landline=vendor.contact_landline,
         address=vendor.address,
     )
+
+
+# ─── MFA / TOTP Endpoints ──────────────────────────────────
+
+
+class MFASetupResponse(BaseModel):
+    secret: str
+    provisioning_uri: str
+    qr_code_url: str
+
+
+@router.post("/vendors/mfa/setup")
+async def mfa_setup(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+):
+    result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
+    vendor = result.one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor profile not found")
+
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled. Disable it first to reconfigure.")
+
+    # Clear any stale (unverified) secret before generating a new one
+    vendor.totp_secret = None
+
+    # Generate new TOTP secret
+    totp_secret = pyotp.random_base32()
+    encrypted = encrypt_secret(totp_secret)
+
+    # Build provisioning URI for QR code
+    issuer = settings.TOTP_ISSUER_NAME
+    provisioning_uri = pyotp.totp.TOTP(totp_secret).provisioning_uri(
+        name=current_user.email,
+        issuer_name=issuer,
+    )
+
+    # Store encrypted secret (but don't enable MFA yet — user must verify first)
+    vendor.totp_secret = encrypted
+    session.add(vendor)
+    await session.commit()
+
+    return MFASetupResponse(
+        secret=totp_secret,
+        provisioning_uri=provisioning_uri,
+        qr_code_url=provisioning_uri,
+    )
+
+
+class MFAVerifySetupRequest(BaseModel):
+    code: str
+
+
+@router.post("/vendors/mfa/verify-setup")
+async def mfa_verify_setup(
+    body: MFAVerifySetupRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+):
+    result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
+    vendor = result.one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor profile not found")
+
+    if not vendor.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA setup not initiated. Call /vendors/mfa/setup first.")
+
+    try:
+        totp_secret = decrypt_secret(vendor.totp_secret)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to decrypt TOTP secret")
+
+    totp = pyotp.TOTP(totp_secret)
+    if not totp.verify(body.code):
+        raise HTTPException(status_code=400, detail="Invalid verification code. Please try again.")
+
+    # Enable MFA
+    current_user.mfa_enabled = True
+    session.add(current_user)
+    await session.commit()
+
+    return {"message": "MFA enabled successfully.", "mfa_enabled": True}
+
+
+@router.post("/vendors/mfa/disable")
+async def mfa_disable(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+):
+    result = await session.exec(select(Vendor).where(Vendor.user_id == current_user.id))
+    vendor = result.one_or_none()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor profile not found")
+
+    vendor.totp_secret = None
+    current_user.mfa_enabled = False
+    session.add(vendor)
+    session.add(current_user)
+    await session.commit()
+
+    return {"message": "MFA disabled successfully.", "mfa_enabled": False}
+
+
+@router.get("/vendors/mfa/status")
+async def mfa_status(
+    current_user: User = Depends(RoleChecker([UserRole.VENDOR])),
+):
+    return {
+        "mfa_enabled": current_user.mfa_enabled,
+        "email": current_user.email,
+    }

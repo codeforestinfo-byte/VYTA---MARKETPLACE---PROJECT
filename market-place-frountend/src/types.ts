@@ -31,6 +31,9 @@ export interface User {
   name: string;
   role: 'buyer' | 'vendor';
   vendorId?: string;
+  storeRole?: string;
+  emailVerified?: boolean;
+  mfaEnabled?: boolean;
 }
 
 export interface CartItem {

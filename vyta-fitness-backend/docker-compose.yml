@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -79,10 +77,20 @@ services:
 
   frontend:
     build:
-      context: ../gym-&-fitness-multi-vendor-marketplace
+      context: ../market-place-frountend
       dockerfile: Dockerfile
     ports:
       - "3000:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: ../vyta-admin
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
     depends_on:
       - app
     restart: unless-stopped

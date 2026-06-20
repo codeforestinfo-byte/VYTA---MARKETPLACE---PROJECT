@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { Award, Package, Shield, TrendingUp, PlusCircle, CheckCircle, Ship, AlertCircle, ShoppingBag, LayoutDashboard, Settings } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Award, Package, Shield, TrendingUp, PlusCircle, CheckCircle, Ship, AlertCircle, ShoppingBag, LayoutDashboard, Settings, Smartphone, Key, XCircle } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { Product, Vendor, Order } from '../types';
+import { api } from '../api';
 
 interface VendorDashboardProps {
   currentUser: any;
@@ -34,7 +36,85 @@ export default function VendorDashboard({
     rating: 4.8
   };
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'inventory' | 'add_product' | 'orders'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'inventory' | 'add_product' | 'orders' | 'security'>('overview');
+
+  // MFA Security state
+  const [mfaStatus, setMfaStatus] = useState<boolean>(currentUser?.mfaEnabled || false);
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+  const [mfaSuccess, setMfaSuccess] = useState<string | null>(null);
+  const [setupData, setSetupData] = useState<{ secret: string; provisioning_uri: string; qr_code_url: string } | null>(null);
+  const [mfaSetupCode, setMfaSetupCode] = useState('');
+
+  useEffect(() => {
+    if (activeTab === 'security') {
+      loadMfaStatus();
+    }
+  }, [activeTab]);
+
+  const loadMfaStatus = async () => {
+    try {
+      const res = await api.mfaStatus();
+      setMfaStatus(res.mfa_enabled);
+    } catch {
+      // silently fail
+    }
+  };
+
+  const handleMfaSetup = async () => {
+    setMfaLoading(true);
+    setMfaError(null);
+    setMfaSuccess(null);
+    try {
+      const res = await api.mfaSetup();
+      setSetupData(res);
+    } catch (err: unknown) {
+      setMfaError(err instanceof Error ? err.message : 'Failed to start MFA setup.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaVerifySetup = async () => {
+    if (!mfaSetupCode || mfaSetupCode.length !== 6) {
+      setMfaError('Please enter a valid 6-digit code.');
+      return;
+    }
+    setMfaLoading(true);
+    setMfaError(null);
+    try {
+      const res = await api.mfaVerifySetup(mfaSetupCode);
+      setMfaStatus(res.mfa_enabled);
+      setMfaSuccess(res.message);
+      setSetupData(null);
+      setMfaSetupCode('');
+    } catch (err: unknown) {
+      setMfaError(err instanceof Error ? err.message : 'Invalid code. Try again.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaDisable = async () => {
+    if (!window.confirm('Are you sure you want to disable two-factor authentication?')) return;
+    setMfaLoading(true);
+    setMfaError(null);
+    try {
+      const res = await api.mfaDisable();
+      setMfaStatus(res.mfa_enabled);
+      setMfaSuccess(res.message);
+    } catch (err: unknown) {
+      setMfaError(err instanceof Error ? err.message : 'Failed to disable MFA.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaCancelSetup = () => {
+    setSetupData(null);
+    setMfaSetupCode('');
+    setMfaError(null);
+  };
   
   // Form states for listing new product
   const [newTitle, setNewTitle] = useState('');
@@ -206,6 +286,16 @@ export default function VendorDashboard({
           >
             <ShoppingBag className="h-4 w-4" />
             Purchase Orders ({vendorOrders.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('security')}
+            className={`pb-2 text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 border-b-2 transition cursor-pointer select-none ${
+              activeTab === 'security' ? 'border-[#1b73b3] text-black font-extrabold' : 'border-transparent text-gray-500 hover:text-gray-900'
+            }`}
+            id="tab-toggle-security"
+          >
+            <Shield className="h-4 w-4" />
+            Security
           </button>
         </div>
 
@@ -727,6 +817,152 @@ export default function VendorDashboard({
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab Contents 5: Security (MFA) */}
+        {activeTab === 'security' && (
+          <div className="bg-white rounded-lg border border-gray-200 p-5 text-left shadow-xs space-y-4 animate-in fade-in" id="tabcontent-security">
+            <div className="flex items-center justify-between border-b pb-2 mb-2">
+              <h3 className="font-extrabold text-sm text-gray-900 font-display uppercase tracking-wide flex items-center gap-1.5">
+                <Shield className="h-4 w-4 text-[#1c3d52]" />
+                Security Settings
+              </h3>
+              <span className="text-xs text-gray-500">Two-Factor Authentication (2FA)</span>
+            </div>
+
+            {mfaError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-xs flex items-center gap-1.5">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {mfaError}
+              </div>
+            )}
+            {mfaSuccess && (
+              <div className="bg-green-50 border border-green-200 text-green-700 px-3 py-2 rounded text-xs flex items-center gap-1.5">
+                <CheckCircle className="h-4 w-4 shrink-0" />
+                {mfaSuccess}
+              </div>
+            )}
+
+            {/* MFA Status Card */}
+            <div className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${mfaStatus ? 'bg-green-100' : 'bg-gray-100'}`}>
+                    <Smartphone className={`h-5 w-5 ${mfaStatus ? 'text-green-600' : 'text-gray-400'}`} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-gray-900">Authenticator App</p>
+                    <p className="text-xs text-gray-500">
+                      {mfaStatus
+                        ? 'Two-factor authentication is enabled. Use Microsoft Authenticator to generate codes.'
+                        : 'Protect your account with an additional verification step using Microsoft Authenticator.'}
+                    </p>
+                  </div>
+                </div>
+                <div>
+                  {mfaStatus ? (
+                    <button
+                      onClick={handleMfaDisable}
+                      disabled={mfaLoading}
+                      className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-300 rounded hover:bg-red-50 transition cursor-pointer disabled:opacity-50"
+                    >
+                      Disable 2FA
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleMfaSetup}
+                      disabled={mfaLoading || !!setupData}
+                      className="px-3 py-1.5 text-xs font-bold text-white bg-[#1b73b3] rounded hover:bg-[#145a8a] transition cursor-pointer disabled:opacity-50"
+                    >
+                      {mfaLoading ? 'Loading...' : 'Enable 2FA'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* MFA Setup Wizard */}
+            {setupData && (
+              <div className="border border-blue-200 bg-blue-50/30 rounded-lg p-5 space-y-4">
+                <h4 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                  <Key className="h-4 w-4 text-[#1c3d52]" />
+                  Step 1: Scan QR Code
+                </h4>
+                <p className="text-xs text-gray-600">
+                  Open Microsoft Authenticator, tap <strong>+</strong> and scan the QR code below. If you cannot scan, manually enter the secret key.
+                </p>
+
+                {/* QR Code Display */}
+                <div className="flex justify-center">
+                  <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+                    {setupData?.provisioning_uri ? (
+                      <QRCodeSVG
+                        value={setupData.provisioning_uri}
+                        size={200}
+                        level="M"
+                      />
+                    ) : (
+                      <div className="w-48 h-48 flex items-center justify-center text-gray-400 text-xs">
+                        Loading QR code...
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Manual Secret Key */}
+                <div className="bg-gray-50 border border-gray-200 rounded p-3">
+                  <p className="text-[10px] text-gray-500 font-bold uppercase mb-1">Manual Setup Key</p>
+                  <p className="text-xs font-mono font-bold text-gray-800 break-all select-all bg-white p-2 rounded border">
+                    {setupData.secret}
+                  </p>
+                </div>
+
+                <hr className="border-gray-200" />
+
+                <h4 className="text-sm font-bold text-gray-900">
+                  Step 2: Verify Code
+                </h4>
+                <p className="text-xs text-gray-600">
+                  Enter the 6-digit code from Microsoft Authenticator to confirm setup.
+                </p>
+
+                <div className="flex items-end gap-3">
+                  <div className="flex-1">
+                    <label className="block text-xs font-bold text-gray-900 mb-1" htmlFor="mfa-setup-code-input">
+                      Verification Code
+                    </label>
+                    <input
+                      id="mfa-setup-code-input"
+                      type="text"
+                      inputMode="numeric"
+                      value={mfaSetupCode}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 6);
+                        setMfaSetupCode(digits);
+                      }}
+                      placeholder="000000"
+                      maxLength={6}
+                      className="w-full border border-gray-400 rounded px-2.5 py-2 text-sm text-center text-lg font-mono tracking-[0.5em] outline-none focus:border-[#1c3d52] focus:shadow-[0_0_0_3px_rgba(0,94,42,0.15)]"
+                    />
+                  </div>
+                  <button
+                    onClick={handleMfaVerifySetup}
+                    disabled={mfaLoading || mfaSetupCode.length !== 6}
+                    className="px-5 py-2 bg-[#1b73b3] hover:bg-[#145a8a] text-black font-extrabold text-xs rounded shadow transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {mfaLoading ? 'Verifying...' : 'Verify & Enable'}
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleMfaCancelSetup}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline cursor-pointer bg-transparent border-none"
+                >
+                  Cancel setup
+                </button>
               </div>
             )}
           </div>

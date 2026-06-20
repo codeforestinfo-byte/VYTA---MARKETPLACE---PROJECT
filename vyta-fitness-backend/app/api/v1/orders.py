@@ -9,7 +9,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_session
-from app.core.dependencies import RoleChecker
+from app.core.dependencies import RoleChecker, AdminRoleChecker
 from app.models.customer import Customer
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
@@ -187,7 +187,7 @@ async def get_order(
 @router.get("/orders", response_model=List[OrderResponse])
 async def list_orders(
     session: AsyncSession = Depends(get_session),
-    current_user: User = Depends(RoleChecker([UserRole.ADMIN])),
+    current_user: User = Depends(AdminRoleChecker()),
 ):
     result = await session.exec(
         select(Order)
